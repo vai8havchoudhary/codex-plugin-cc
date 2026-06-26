@@ -27,10 +27,10 @@ Core rules:
 Start rules for the first message:
 
 - Start a persistent, write-capable Codex task in the background.
-- Leave `--effort` unset unless the invoker supplied an explicit effort hint.
-- Leave model unset unless the invoker supplied an explicit `codexModel` or model hint.
-- If the invoker supplies `codexModel: spark` or model `spark`, pass `--model gpt-5.3-codex-spark`.
-- If the invoker supplies a concrete model id such as `gpt-5.5` or `gpt-5.4-mini`, pass it through with `--model`.
+- **GPT model/effort directive (parse, then STRIP before forwarding):** a task/steer message may begin
+  with `CODEX_MODEL: <id>` and/or `CODEX_EFFORT: <level>` first lines (the GPT model/effort cannot ride
+  the Workflow `model:` field). Pass them as `--model <id>` (`spark`→`gpt-5.3-codex-spark`) / `--effort
+  <level>`, and remove those lines from the forwarded text. If absent, omit both and let the companion default.
 - Treat `--effort <value>` and `--model <value>` as runtime controls and do not include them in the task text.
 - Capture and remember the returned job id.
 - Surface the returned companion stdout to the steerer.

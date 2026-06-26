@@ -195,31 +195,40 @@ thread you (or an orchestrator) steer across turns, the GPT peer of a Claude tea
 Replaces the IRON-LAW `w()` guard with an **engine-resolving** helper that makes the three engines
 peers:
 
+**⚠ Hard-won correction (caught by the integration test):** a GPT model id MUST NOT ride the Workflow
+`agent()` `model:`/`effort:` fields — those select the *Anthropic relay engine* (sonnet|opus|…), and
+the harness rejects `model:'gpt-5.5'` outright, so the node fails before the relay runs. The GPT
+model/effort travel to the relay **through the prompt** as a `CODEX_MODEL:` / `CODEX_EFFORT:` directive
+(the relay strips them and forwards `--model`/`--effort` to `consult`). The relay's own engine stays
+sonnet (its frontmatter). So `wf()` exposes the GPT dial as `gptModel`/`gptEffort`, never `model:`.
+
 ```js
-// engine: an Anthropic alias/id ('sonnet'|'opus'|'haiku'|'claude-*') OR a GPT model id
-//         ('gpt-5.5' | 'gpt-5.5-codex' | 'gpt-5.4-mini' | 'gpt-5.3-codex-spark' | 'spark' | …)
-//         (+ effort, schema, label, phase, session?)
-const GPT = (e) => e === 'spark' || /^gpt-/.test(e)   // the GPT family — model id IS the engine
+// engine: 'sonnet'|'opus'|'haiku'|'claude-*'  (Anthropic — rides model:)
+// for GPT: agentType:'codex:codex-consult'|'codex:codex-session' + gptModel/gptEffort (ride a directive)
+const _CODEX = new Set(['codex:codex-consult','codex:codex-session','codex:codex-rescue','codex-reviewer','codex-ops'])
+const _GPT = new Set(['codex:codex-consult','codex:codex-session'])
 function wf(prompt, opts = {}) {
-  const { engine, session, ...rest } = opts
-  if (engine && !GPT(engine)) return agent(prompt, { model: engine, ...rest })   // Anthropic native
-  if (GPT(engine)) {
-    // SEAM: collapses under Layer 1 to `agent(prompt,{ model: engine, ...rest })` (one-shot) or a
-    // steerable external-engine teammate (session). `engine` is forwarded as codex `--model`.
-    const agentType = session ? 'codex:codex-session' : 'codex:codex-consult'
-    return agent(prompt, { agentType, codexModel: engine, ...rest })  // relay passes codexModel → --model
+  const bound = opts.model === 'sonnet' || opts.model === 'opus' || _CODEX.has(opts.agentType)
+  if (!bound) throw new Error(`wf: agent "${opts.label||'?'}" has no explicit engine — would inherit Opus.`)
+  // GPT dial → prompt directive (NEVER agent model:/effort:, which select the Anthropic relay engine).
+  if (_GPT.has(opts.agentType) && (opts.gptModel || opts.gptEffort)) {
+    const d = []
+    if (opts.gptModel)  d.push(`CODEX_MODEL: ${opts.gptModel}`)
+    if (opts.gptEffort) d.push(`CODEX_EFFORT: ${opts.gptEffort}`)
+    prompt = d.join('\n') + '\n\n' + prompt
   }
-  throw new Error(`wf: agent "${opts.label||'?'}" has no explicit engine — would inherit Opus. `
-    + `Set engine to an Anthropic id or a GPT model id (gpt-*/spark).`)
+  const { gptModel, gptEffort, ...agentOpts } = opts   // never leak the GPT dial into agent() opts
+  return agent(prompt, agentOpts)   // SEAM: under Layer 1, a gpt node collapses to model:'gpt-5.5'
 }
 ```
 
-Still fail-closed (unbound → throw, never silent Opus). **The GPT family is treated exactly like
-Anthropic model ids — the model string IS the engine.** Any `gpt-*` id (or the `spark` alias) routes
-to the codex relay and is forwarded verbatim as `--model` (pass-through: new GPT models work with no
-code change; `spark`→`gpt-5.3-codex-spark`; default `gpt-5.5`→codex default). `+ session:true` →
-steerable collaborator. Effort maps with the `xhigh` cap (codex efforts: none|minimal|low|medium|high|
-xhigh — `max` clamps to xhigh).
+Still fail-closed (unbound → throw, never silent Opus). GPT is selected by `agentType`
+(`codex:codex-consult` fan-out / `codex:codex-session` steerable); the GPT **model/effort** are the
+`gptModel`/`gptEffort` opts (default `gpt-5.5`), forwarded to the relay via the `CODEX_MODEL:`/
+`CODEX_EFFORT:` prompt directive and on to `consult --model/--effort` (pass-through: new GPT models
+work with no code change; `spark`→`gpt-5.3-codex-spark`; effort caps at `xhigh`, `max`→xhigh). The
+Anthropic relay engine stays sonnet. The author writes `gptModel`/`gptEffort`, never a `gpt-*` in
+`model:`.
 
 ### C4 — Orchestration: guard + skill updates
 

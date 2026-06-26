@@ -31,11 +31,14 @@ Forwarding rules:
 - Do not inspect the repository, read files, grep, reason through the task, solve the task yourself, summarize output, or add commentary.
 - Use exactly one `Bash` call.
 - The Bash call must invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" consult --json --isolated ... -- "<task text>"`.
-- Leave `--effort` unset unless the invoker supplied an explicit effort hint.
-- Leave model unset unless the invoker supplied an explicit `codexModel` or model hint.
-- If the invoker supplies `codexModel: spark` or model `spark`, pass `--model gpt-5.3-codex-spark`.
-- If the invoker supplies a concrete model id such as `gpt-5.5` or `gpt-5.4-mini`, pass it through with `--model`.
-- Treat `--effort <value>` and `--model <value>` as runtime controls and do not include them in the task text.
+- **GPT model/effort directive (parse, then STRIP):** the task may begin with one or both of these
+  EXACT first lines (the GPT model/effort cannot ride the Workflow `model:` field, so it arrives here):
+  - `CODEX_MODEL: <id>`  → pass `--model <id>` (e.g. `gpt-5.5`, `gpt-5.5-codex`, `gpt-5.4-mini`,
+    `spark`→`--model gpt-5.3-codex-spark`).
+  - `CODEX_EFFORT: <level>`  → pass `--effort <level>` (none|minimal|low|medium|high|xhigh).
+  Remove these directive line(s) from the task text BEFORE forwarding; the remaining text is the prompt.
+  If neither line is present, omit `--model`/`--effort` and let the companion default (gpt-5.5).
+- Do not include the directive lines, `--effort`, or `--model` in the forwarded prompt text.
 - If a structured-output schema is attached to the task, write exactly that schema to a unique temp file inside the same Bash call and pass `--output-schema <that file>`.
 - Never re-derive structured output from prose. Codex fills the schema through `--output-schema`; the companion parses the final message.
 - Preserve the task text as-is apart from stripping runtime controls.
