@@ -784,6 +784,147 @@ test("task forwards model selection and reasoning effort to app-server turn/star
   assert.equal(fakeState.lastTurnStart.effort, "low");
 });
 
+test("consult fails loud when Codex is unavailable", () => {
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  const emptyPath = makeTempDir();
+
+  const result = run(process.execPath, [SCRIPT, "consult", "--json", "--", "answer from gpt"], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      PATH: emptyPath
+    }
+  });
+
+  assert.equal(result.status, 3);
+  const payload = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(payload), ["status", "model", "output", "threadId", "turnId", "reason"]);
+  assert.equal(payload.status, "unavailable");
+  assert.equal(payload.threadId, null);
+  assert.equal(payload.turnId, null);
+  assert.equal(typeof payload.reason, "string");
+  assert.match(payload.reason, /codex unavailable/i);
+  assert.doesNotMatch(payload.output, /Handled the requested task/);
+});
+
+test("consult requires prompt via passthrough, prompt file, or stdin", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+
+  const result = run(process.execPath, [SCRIPT, "consult", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /Provide a consult prompt/);
+});
+
+test("consult --json emits the exact response keys and forwards model effort", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+
+  const result = run(process.execPath, [SCRIPT, "consult", "--json", "--model", "spark", "--effort", "max", "--", "diagnose the failing test"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(payload), ["status", "model", "output", "threadId", "turnId", "reason"]);
+  assert.equal(payload.status, "ok");
+  assert.equal(payload.model, "gpt-5.3-codex-spark");
+  assert.equal(payload.output, "Handled the requested task.\nTask prompt accepted.");
+  assert.equal(payload.threadId, "thr_1");
+  assert.equal(payload.turnId, "turn_1");
+  assert.equal(payload.reason, null);
+
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.model, "gpt-5.3-codex-spark");
+  assert.equal(fakeState.lastTurnStart.effort, "xhigh");
+});
+
+test("consult is isolated by default and ignores a broken broker endpoint", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+
+  const result = run(process.execPath, [SCRIPT, "consult", "--json", "--", "diagnose the failing test"], {
+    cwd: repo,
+    env: {
+      ...buildEnv(binDir),
+      CODEX_COMPANION_APP_SERVER_ENDPOINT: "unix:/tmp/codex-companion-missing.sock"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.status, "ok");
+  assert.equal(payload.model, "gpt-5.4");
+});
+
+test("consult fails closed when a requested GPT model is not confirmed by thread metadata", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "no-thread-model");
+  initGitRepo(repo);
+
+  const result = run(process.execPath, [SCRIPT, "consult", "--json", "--model", "gpt-5.5", "--", "diagnose the failing test"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 3);
+  const payload = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(payload), ["status", "model", "output", "threadId", "turnId", "reason"]);
+  assert.equal(payload.status, "unavailable");
+  assert.equal(payload.model, "gpt-5.5");
+  assert.match(payload.reason, /model unconfirmed: missing/);
+});
+
+test("consult parses output-schema final messages as structured output", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const schemaPath = path.join(repo, "consult.schema.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(
+    schemaPath,
+    JSON.stringify({
+      type: "object",
+      properties: {
+        verdict: { type: "string" },
+        summary: { type: "string" },
+        findings: { type: "array" },
+        next_steps: { type: "array" }
+      },
+      required: ["verdict", "summary", "findings", "next_steps"]
+    }),
+    "utf8"
+  );
+
+  const result = run(process.execPath, [SCRIPT, "consult", "--json", "--output-schema", "consult.schema.json", "--", "return structured JSON"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(payload), ["status", "model", "output", "threadId", "turnId", "reason"]);
+  assert.equal(payload.status, "ok");
+  assert.equal(typeof payload.output, "object");
+  assert.equal(payload.output.verdict, "approve");
+  assert.deepEqual(payload.output.findings, []);
+});
+
 test("task logs reasoning summaries and assistant messages to the job log", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

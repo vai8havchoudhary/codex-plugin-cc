@@ -80,6 +80,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs consult [--json] [--isolated|--shared|--thread <id>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [--output-schema <file>] [--timeout <sec>] -- <prompt>",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -177,6 +178,17 @@ function firstMeaningfulLine(text, fallback) {
     .map((value) => value.trim())
     .find(Boolean);
   return line ?? fallback;
+}
+
+class UsageError extends Error {
+  constructor(message) {
+    super(message);
+    this.exitCode = 2;
+  }
+}
+
+function usageError(message) {
+  return new UsageError(message);
 }
 
 async function buildSetupReport(cwd, actionsTaken = []) {
@@ -649,6 +661,146 @@ function readTaskPrompt(cwd, options, positionals) {
   return positionalPrompt || readStdinIfPiped();
 }
 
+function readConsultPrompt(cwd, options, positionals, hasPassthroughPrompt) {
+  const promptSources = [
+    options["prompt-file"] ? "prompt-file" : null,
+    hasPassthroughPrompt && positionals.length > 0 ? "positional" : null
+  ].filter(Boolean);
+
+  if (promptSources.length > 1) {
+    throw usageError("Provide the consult prompt using only one of --prompt-file, -- <prompt>, or stdin.");
+  }
+
+  if (options["prompt-file"]) {
+    return fs.readFileSync(path.resolve(cwd, options["prompt-file"]), "utf8");
+  }
+
+  if (positionals.length > 0) {
+    if (!hasPassthroughPrompt) {
+      throw usageError("Provide the consult prompt after --, via --prompt-file, or via stdin.");
+    }
+    return positionals.join(" ");
+  }
+
+  return readStdinIfPiped();
+}
+
+function normalizeConsultReasoningEffort(effort) {
+  if (String(effort ?? "").trim().toLowerCase() === "max") {
+    return "xhigh";
+  }
+  return normalizeReasoningEffort(effort);
+}
+
+function parseConsultTimeoutSeconds(value) {
+  if (value == null) {
+    return null;
+  }
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw usageError("--timeout must be a positive number of seconds.");
+  }
+  return seconds;
+}
+
+function buildConsultPayload({ status, model, output = "", threadId = null, turnId = null, reason = null }) {
+  return {
+    status,
+    model,
+    output,
+    threadId,
+    turnId,
+    reason
+  };
+}
+
+function consultUnavailable(model, reason, result = {}) {
+  return {
+    exitStatus: 3,
+    payload: buildConsultPayload({
+      status: "unavailable",
+      model: model ?? "",
+      output: "",
+      threadId: result.threadId ?? null,
+      turnId: result.turnId ?? null,
+      reason
+    })
+  };
+}
+
+function isGptModel(model) {
+  return typeof model === "string" && /^gpt-/i.test(model);
+}
+
+function resolveConsultModel(requestedModel, result) {
+  const actualModel = result.threadModel ?? result.startModel ?? null;
+  const model = actualModel ?? requestedModel ?? "";
+  if (isGptModel(requestedModel) && !isGptModel(actualModel)) {
+    return {
+      model,
+      reason: `model unconfirmed: ${actualModel ?? "missing"}`
+    };
+  }
+  if (!model) {
+    return {
+      model,
+      reason: "model unconfirmed: missing"
+    };
+  }
+  return { model, reason: null };
+}
+
+async function executeConsultRun(request) {
+  const workspaceRoot = resolveWorkspaceRoot(request.cwd);
+  const outputSchema = request.outputSchemaPath ? readOutputSchema(path.resolve(request.cwd, request.outputSchemaPath)) : null;
+  const result = await runAppServerTurn(workspaceRoot, {
+    resumeThreadId: request.threadId,
+    prompt: request.prompt,
+    model: request.model,
+    effort: request.effort,
+    sandbox: "read-only",
+    outputSchema,
+    isolated: request.isolated,
+    timeoutMs: request.timeoutSeconds ? Math.ceil(request.timeoutSeconds * 1000) : null
+  });
+
+  const { model, reason: modelReason } = resolveConsultModel(request.model, result);
+  if (modelReason) {
+    return consultUnavailable(model, modelReason, result);
+  }
+
+  if (result.status !== 0) {
+    const reason = result.error?.message ?? result.stderr ?? "codex unavailable: turn failed";
+    return consultUnavailable(model, reason, result);
+  }
+
+  const finalMessage = typeof result.finalMessage === "string" ? result.finalMessage : "";
+  if (!finalMessage.trim()) {
+    return consultUnavailable(model, "codex unavailable: empty response", result);
+  }
+
+  let output = finalMessage;
+  if (outputSchema) {
+    const parsed = parseStructuredOutput(finalMessage);
+    if (parsed.parseError) {
+      return consultUnavailable(model, `structured output parse failed: ${parsed.parseError}`, result);
+    }
+    output = parsed.parsed;
+  }
+
+  return {
+    exitStatus: 0,
+    payload: buildConsultPayload({
+      status: "ok",
+      model,
+      output,
+      threadId: result.threadId ?? null,
+      turnId: result.turnId ?? null,
+      reason: null
+    })
+  };
+}
+
 function requireTaskRequest(prompt, resumeLast) {
   if (!prompt && !resumeLast) {
     throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
@@ -820,6 +972,66 @@ async function handleTask(argv) {
       }),
     { json: options.json }
   );
+}
+
+async function handleConsult(argv) {
+  const normalizedArgv = normalizeArgv(argv);
+  const hasPassthroughPrompt = normalizedArgv.includes("--");
+  const { options, positionals } = parseArgs(normalizedArgv, {
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "output-schema", "timeout", "thread"],
+    booleanOptions: ["json", "isolated", "shared"],
+    aliasMap: {
+      C: "cwd",
+      m: "model"
+    }
+  });
+
+  if (options.isolated && (options.shared || options.thread)) {
+    throw usageError("Choose either --isolated or --shared/--thread for consult.");
+  }
+
+  const cwd = resolveCommandCwd(options);
+  const model = normalizeRequestedModel(options.model);
+  const effort = normalizeConsultReasoningEffort(options.effort);
+  const timeoutSeconds = parseConsultTimeoutSeconds(options.timeout);
+  const prompt = readConsultPrompt(cwd, options, positionals, hasPassthroughPrompt);
+  if (!prompt.trim()) {
+    throw usageError("Provide a consult prompt after --, via --prompt-file, or via stdin.");
+  }
+
+  const isolated = !(options.shared || options.thread);
+  const request = {
+    cwd,
+    model,
+    effort,
+    prompt,
+    outputSchemaPath: options["output-schema"] ?? null,
+    timeoutSeconds,
+    threadId: options.thread ?? null,
+    isolated
+  };
+
+  let execution;
+  try {
+    execution = await executeConsultRun(request);
+  } catch (error) {
+    const reason = error?.message?.startsWith("timeout:")
+      ? error.message
+      : `codex unavailable: ${error instanceof Error ? error.message : String(error)}`;
+    execution = consultUnavailable(model, reason);
+  }
+
+  if (options.json || execution.exitStatus !== 0) {
+    outputResult(execution.payload, true);
+  } else {
+    outputResult(String(execution.payload.output ?? ""), false);
+    if (!String(execution.payload.output ?? "").endsWith("\n")) {
+      process.stdout.write("\n");
+    }
+  }
+  if (execution.exitStatus !== 0) {
+    process.exitCode = execution.exitStatus;
+  }
 }
 
 async function handleTransfer(argv) {
@@ -1043,6 +1255,9 @@ async function main() {
     case "task":
       await handleTask(argv);
       break;
+    case "consult":
+      await handleConsult(argv);
+      break;
     case "transfer":
       await handleTransfer(argv);
       break;
@@ -1069,5 +1284,5 @@ async function main() {
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${message}\n`);
-  process.exitCode = 1;
+  process.exitCode = error?.exitCode ?? 1;
 });

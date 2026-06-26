@@ -751,6 +751,16 @@ async function resumeThread(client, threadId, cwd, options = {}) {
   return client.request("thread/resume", buildResumeParams(threadId, cwd, options));
 }
 
+function extractResponseModel(response) {
+  const model =
+    response?.model ??
+    response?.thread?.model ??
+    response?.thread?.modelId ??
+    response?.thread?.modelName ??
+    null;
+  return typeof model === "string" && model.trim() ? model.trim() : null;
+}
+
 function buildResultStatus(turnState) {
   return turnState.finalTurn?.status === "completed" ? 0 : 1;
 }
@@ -1098,64 +1108,95 @@ export async function runAppServerTurn(cwd, options = {}) {
     throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
   }
 
-  return withAppServer(cwd, async (client) => {
+  const withServer = options.isolated ? withDirectAppServer : withAppServer;
+  return withServer(cwd, async (client) => {
+    const timeoutMs = Number(options.timeoutMs ?? 0);
+    let timedOut = false;
+    let timeoutTimer = null;
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      timeoutTimer = setTimeout(() => {
+        timedOut = true;
+        void client.close().catch(() => {});
+      }, timeoutMs);
+    }
+
     let threadId;
+    let threadModel = null;
+    let threadMetadata = null;
 
-    if (options.resumeThreadId) {
-      emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
-      const response = await resumeThread(client, options.resumeThreadId, cwd, {
-        model: options.model,
-        sandbox: options.sandbox,
-        ephemeral: false
+    try {
+      if (options.resumeThreadId) {
+        emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
+        const response = await resumeThread(client, options.resumeThreadId, cwd, {
+          model: options.model,
+          sandbox: options.sandbox,
+          ephemeral: false
+        });
+        threadId = response.thread.id;
+        threadModel = extractResponseModel(response);
+        threadMetadata = response;
+      } else {
+        emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
+        const response = await startThread(client, cwd, {
+          model: options.model,
+          sandbox: options.sandbox,
+          ephemeral: options.persistThread ? false : true,
+          threadName: options.persistThread ? options.threadName : options.threadName ?? null
+        });
+        threadId = response.thread.id;
+        threadModel = extractResponseModel(response);
+        threadMetadata = response;
+      }
+
+      emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", {
+        threadId
       });
-      threadId = response.thread.id;
-    } else {
-      emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
-      const response = await startThread(client, cwd, {
-        model: options.model,
-        sandbox: options.sandbox,
-        ephemeral: options.persistThread ? false : true,
-        threadName: options.persistThread ? options.threadName : options.threadName ?? null
-      });
-      threadId = response.thread.id;
+
+      const prompt = options.prompt?.trim() || options.defaultPrompt || "";
+      if (!prompt) {
+        throw new Error("A prompt is required for this Codex run.");
+      }
+
+      const turnState = await captureTurn(
+        client,
+        threadId,
+        () =>
+          client.request("turn/start", {
+            threadId,
+            input: buildTurnInput(prompt),
+            model: options.model ?? null,
+            effort: options.effort ?? null,
+            outputSchema: options.outputSchema ?? null
+          }),
+        { onProgress: options.onProgress }
+      );
+
+      return {
+        status: buildResultStatus(turnState),
+        threadId,
+        turnId: turnState.turnId,
+        threadModel,
+        startModel: threadModel,
+        threadMetadata,
+        finalMessage: turnState.lastAgentMessage,
+        reasoningSummary: turnState.reasoningSummary,
+        turn: turnState.finalTurn,
+        error: turnState.error,
+        stderr: cleanCodexStderr(client.stderr),
+        fileChanges: turnState.fileChanges,
+        touchedFiles: collectTouchedFiles(turnState.fileChanges),
+        commandExecutions: turnState.commandExecutions
+      };
+    } catch (error) {
+      if (timedOut) {
+        throw new Error(`timeout: ${Math.ceil(timeoutMs / 1000)}s exceeded`, { cause: error });
+      }
+      throw error;
+    } finally {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+      }
     }
-
-    emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", {
-      threadId
-    });
-
-    const prompt = options.prompt?.trim() || options.defaultPrompt || "";
-    if (!prompt) {
-      throw new Error("A prompt is required for this Codex run.");
-    }
-
-    const turnState = await captureTurn(
-      client,
-      threadId,
-      () =>
-        client.request("turn/start", {
-          threadId,
-          input: buildTurnInput(prompt),
-          model: options.model ?? null,
-          effort: options.effort ?? null,
-          outputSchema: options.outputSchema ?? null
-        }),
-      { onProgress: options.onProgress }
-    );
-
-    return {
-      status: buildResultStatus(turnState),
-      threadId,
-      turnId: turnState.turnId,
-      finalMessage: turnState.lastAgentMessage,
-      reasoningSummary: turnState.reasoningSummary,
-      turn: turnState.finalTurn,
-      error: turnState.error,
-      stderr: cleanCodexStderr(client.stderr),
-      fileChanges: turnState.fileChanges,
-      touchedFiles: collectTouchedFiles(turnState.fileChanges),
-      commandExecutions: turnState.commandExecutions
-    };
   });
 }
 
