@@ -71,12 +71,15 @@ the silent‑Opus‑fallback that started the whole investigation.
 
 ---
 
-## Status checklist
+## Status checklist (updated 2026-06-27 — see HANDOFF.md)
 
-- [ ] A1 — `consult` subcommand
-- [ ] A2 — `--isolated` parallel mode
-- [ ] A3 — `codex-consult.md` fannable agent
-- [ ] A4 — docs/skill contract
-- [ ] Repoint homegrown `codex-worker` + guard → plugin‑native agent
-- [ ] Delete `codex-ask.mjs` + `codex-consult.sh` from `~/.claude/workflows/lib/`
-- [ ] (Track B) File Claude Code harness feature request — external `agent()` engine
+- [x] A1 — `consult` subcommand (read-only, isolated, structured/fail-loud)
+- [x] A2 — `--isolated` parallel mode (`runAppServerTurn({isolated})` → `withDirectAppServer`)
+- [x] A3 — `codex:codex-consult` fannable agent (+ `codex:codex-session`, `codex:karpathy`,
+  `codex:codex-adversarial-review`; `codex-rescue` hardened)
+- [x] A4 — docs/skill contract (plugin skill + README; maxfanout SKILL migrated)
+- [x] Repoint homegrown `codex-worker` + guard → plugin‑native agents; `codex-worker.md` retired
+- [ ] Delete `codex-ask.mjs` + `codex-consult.sh` — **BLOCKED**: deep-research's `codex-bridge` still
+  uses them. Migrate `codex-bridge` to native `consult` first.
+- [x] (Track B / Layer 1) Feature request filed-as-draft — confirmed not possible in-plugin today
+  (`docs/superpowers/specs/2026-06-26-engine-adapter-feature-request.md`)

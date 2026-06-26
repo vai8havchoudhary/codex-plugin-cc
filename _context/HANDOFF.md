@@ -1,74 +1,57 @@
 # HANDOFF — maintained fork of `openai/codex-plugin-cc`
 
-For a fresh agent picking up this work. Read this, then the referenced artifacts. Do **not**
-re-derive what's already written down — it's all in `_context/`.
+For a fresh agent picking up this work. The native-GPT-engine effort is **implemented, verified, and
+live**. This file reflects state as of **2026-06-27** (supersedes the original pre-implementation handoff).
 
-## Goal (one line)
+## What this fork delivers (done)
 
-Make Codex (GPT‑5.5) a first‑class, **fan‑outable** engine for Claude Code Workflows — specifically
-the `maxfanout-workflow` skill under `~/startup` — by landing changes in this maintained fork and
-rebasing on upstream, instead of running OpenAI's PR process.
+GPT (the whole GPT model family) is a **first-class, fan-outable Workflow engine, peer to sonnet/opus**
+— reached through native plugin agents, no homegrown shims. Plugin is at **v1.0.12**, installed as the
+active `codex@openai-codex` (local marketplace → `~/scratch/cc_codex_plugin`).
 
-## Where things stand
+### Native plugin agents (in `plugins/codex/agents/`)
+- **`codex:codex-consult`** — stateless, read-only, **isolated-by-default** parallel fan-out worker.
+  Shells `consult --json --isolated`; structured `{status,model,output,threadId,turnId,reason}` + exit
+  codes (0/3/2). `sonnet` + `effort:low` relay, ironclad forward-only rules.
+- **`codex:codex-session`** — steerable multi-turn collaborator (one persistent shared-broker thread;
+  SendMessage → interrupt+resume).
+- **`codex:karpathy`** — high-calibre **write-capable** end-of-phase fixer: `task --write --model
+  gpt-5.5 --effort xhigh` with the bundled Karpathy discipline (`plugins/codex/karpathy/PERSONA.md`).
+- **`codex:codex-adversarial-review`** — GPT adversarial-review gate on git state.
+- **`codex-rescue`** (existing) — hardened with the same forward-only rules (was silently substituting).
 
-- **Repo:** `~/scratch/cc_codex_plugin` → pushed to `https://github.com/vai8havchoudhary/codex-plugin-cc` (`main`).
-- **Remotes:** `origin` = our fork; `upstream` = `openai/codex-plugin-cc`. Baseline pinned at
-  **v1.0.5 / `80c31f9`** (see `.upstream-baseline.sha`). Sync = `git fetch upstream && git rebase upstream/main`.
-- **Done so far:** context dump only (commit `1ebdb89`). **No plugin code changed yet.**
-- **The clone is v1.0.5**, newer than the v1.0.4 in `~/.claude/plugins/cache`. All line refs in
-  `_context/` are verified against **1.0.5** — trust those, not the cache.
+### Plugin core (`scripts/codex-companion.mjs`, `lib/codex.mjs`)
+- New **`consult`** subcommand (read-only, synchronous, isolated). `runAppServerTurn(..,{isolated})` →
+  `withDirectAppServer` (per-process app-server, off the single-flight broker). Fail-closed model check
+  (`resolveConsultModel`): a requested `gpt-*` that can't be confirmed → `status:unavailable`. Concise
+  `reason` for codex JSON-error envelopes (mixed stderr preserved raw). 8 consult tests, full suite
+  94 pass / 4 pre-existing-env fails.
 
-## Read these (don't duplicate them)
+### Verified (not asserted)
+- 4 concurrent `consult --isolated` ≈ 1× wall-clock, **zero BROKER_BUSY**, all real `gpt-5.5`.
+- End-to-end maxfanout workflow: GPT fan-out + Sonnet fallback on injected error (`viaGpt:2,fellBack:1`).
+- All 7 codex agents invocation-tested. The implement→adversarial-review→karpathy-fix loop dogfooded.
 
-- `../FORK.md` — remote model + upstream sync workflow.
-- `01-session-analysis.md` — *why* this fork exists (session `41961880`: silent‑Opus‑fallback bug;
-  verdict that `codex-consult.sh` is load‑bearing but belongs upstream).
-- `02-architecture.md` — the path to GPT and **the one blocker**: single‑flight broker at
-  `plugins/codex/scripts/app-server-broker.mjs:173-182` (with all v1.0.5 `file:line` refs).
-- `03-planned-changes.md` — **the work list** (Track A = plugin‑landable; Track B = Anthropic‑only).
-  Has a status checklist; everything is unchecked.
-- `homegrown/` — verbatim copies of the shims being retired (`codex-ask.mjs`, `codex-consult.sh`)
-  and the pieces being repointed (`codex-worker.md`, `maxfanout-guard.mjs`).
+## Consumer wiring (the orchestration layer, `~/startup`)
+- `maxfanout-workflow/SKILL.md` — fully migrated: `wf()` guard + `gptOk()` backstop; GPT model/effort
+  via **`gptModel`/`gptEffort`** (NEVER `model:` — that selects the Anthropic relay engine and a `gpt-*`
+  there makes the node fail; this bug was caught by the integration test). End-of-phase fix-loop section.
+- `maxfanout-guard.mjs` — allow-lists the native agents; `wf()`/`w()` regex; `codex-worker` removed.
+- `CLAUDE.md` — flipped to native; `HOW-IT-WORKS.md` carries a migration note.
+- `~/startup/.claude/agents/codex-worker.md` — **retired** (copy preserved in `_context/homegrown/`).
 
-## Next action (start here)
+## Still open / next
+- **Layer 1 (true zero-relay `model:'gpt-5.5'`):** confirmed NOT possible today (harness model resolver
+  is Anthropic-only; no engine-adapter plugin point). Feature request drafted:
+  `docs/superpowers/specs/2026-06-26-engine-adapter-feature-request.md`. The relay agents are the bridge
+  until it lands; they're designed to collapse to native when it does.
+- **`codex-consult.sh` / `codex-ask.mjs` NOT deleted** — the separate **deep-research** workflow's
+  `codex-bridge` agent (`~/.claude/agents/codex-bridge.md`) still shells them. Migrate `codex-bridge`
+  to native `consult` first, then they can be removed.
+- Optional: move `codex-reviewer`/`codex-ops` (bare user agents) into the plugin as `codex:` agents for
+  naming consistency.
 
-**A1 + A2** from `03-planned-changes.md` — the load‑bearing pair that retires both homegrown shims:
-
-1. **A1** — add `case "consult":` to the dispatch switch at `codex-companion.mjs:1026-1061` (+ usage
-   string near `:82`). Read‑only, synchronous, `--json` output
-   `{status:"ok"|"unavailable", model, output, threadId}` with distinct exit codes.
-2. **A2** — `--isolated` / `--session-namespace <id>` flag: when set, **don't** reuse the shared
-   broker (`lib/codex.mjs:910/944/982`); spawn a per‑call detached app‑server with its own broker
-   session dir (`lib/broker-lifecycle.mjs` → `createBrokerSessionDir`), always `--fresh`. This is the
-   exact proven parallelism mechanism from `homegrown/codex-ask.mjs`, made native.
-
-Then A3 (`agents/codex-consult.md` fannable agent), A4 (docs), then repoint the homegrown
-`codex-worker` + guard and delete the two shims from `~/.claude/workflows/lib/`.
-
-**Validate parallelism the way the session did:** N concurrent `consult --isolated` calls must show
-N distinct PIDs, overlapping wall‑clock (not serial), each self‑reporting a `gpt-*` model, **zero**
-`BROKER_BUSY`, and **zero** Claude fallback. Don't assert it — prove it (the session's recurring
-lesson: Codex claims were repeatedly wrong; verify empirically).
-
-## Watch out for
-
-- **Track B is NOT in this fork's gift.** `agent({model:'gpt-5.5'})` with no subprocess needs an
-  Anthropic harness change (no non‑Anthropic engine slot in the Workflow runtime). File it with
-  Claude Code separately; don't block Track A on it.
-- **`maxfanout-guard.mjs` stays ours** (Claude‑side engine‑binding safety; `agentType` ≠ engine —
-  omitting `model:` silently inherits Opus). The fork makes the *worker* native; the guard still
-  prevents the silent‑Opus bug. Just swap the allow‑listed agent name when A3 lands.
-- **Keep changes small + additive** (new subcommand, new flag, new agent file) so the
-  `git rebase upstream/main` stays cheap.
-
-## Suggested skills for the next agent
-
-- **`superpowers:brainstorming`** — before implementing A1/A2, if any interface detail of the
-  `consult` contract (JSON shape, exit codes, flag names) is still open.
-- **`superpowers:test-driven-development`** — write the parallelism/fail‑loud proof harness *before*
-  the implementation; the acceptance criteria above are the tests.
-- **`superpowers:verification-before-completion`** — gate any "it works" claim on the empirical
-  N‑way real‑GPT proof, not assertion.
-- **`maxfanout-workflow`** (under `~/startup`) — the consumer this whole fork serves; consult it for
-  how `codex-worker`/`codex:codex-consult` must be invoked and engine‑bound.
-- **`codex:setup`** — confirm the local Codex CLI is authenticated before running any live consult.
+## Specs
+- `docs/superpowers/specs/2026-06-26-native-gpt-engine-design.md` — the design (Codex-reviewed; all
+  corrections folded in).
+- `docs/superpowers/specs/2026-06-26-engine-adapter-feature-request.md` — Layer-1 feature request.
