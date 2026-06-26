@@ -6,12 +6,13 @@ user-invocable: false
 
 # Codex Runtime
 
-Use this skill only inside the `codex:codex-rescue` subagent.
+Use this skill only inside Codex relay subagents: `codex:codex-rescue`, `codex:codex-consult`, and `codex:codex-session`.
 
 Primary helper:
 - `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task "<raw arguments>"`
+- `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" consult --json --isolated -- "<prompt>"`
 
-Execution rules:
+Rescue execution rules:
 - The rescue subagent is a forwarder, not an orchestrator. Its only job is to invoke `task` once and return that stdout unchanged.
 - Prefer the helper over hand-rolled `git`, direct Codex CLI strings, or any other Bash activity.
 - Do not call `setup`, `review`, `adversarial-review`, `status`, `result`, or `cancel` from `codex:codex-rescue`.
@@ -41,3 +42,50 @@ Safety rules:
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Return the stdout of the `task` command exactly as-is.
 - If the Bash call fails or Codex cannot be invoked, return nothing.
+
+Consult helper:
+- `consult` is the stateless, read-only GPT fan-out primitive.
+- Use `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" consult --json --isolated [--effort <effort>] [--model <model>] [--output-schema <schema-file>] -- "<prompt>"`.
+- `--isolated` is the default for consult and routes around the shared broker so multiple consult calls can run concurrently.
+- `consult` has no `--write`; it always runs with read-only sandboxing.
+- Leave `--effort` unset unless the invoker supplied an explicit effort. Accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`; `max` is clamped by the companion to `xhigh`.
+- Leave model unset unless the invoker supplied a model. `spark` maps to `gpt-5.3-codex-spark`; concrete `gpt-*` ids are passed through with `--model`.
+- If a structured-output schema is attached, write the schema to a unique temp file and pass `--output-schema <schema-file>`. Do not re-derive structure from prose.
+- Return the JSON stdout exactly as-is. Do not add preamble, summary, or markers.
+
+Consult JSON contract:
+```json
+{
+  "status": "ok",
+  "model": "gpt-5.5-codex",
+  "output": "...",
+  "threadId": "thr_...",
+  "turnId": "turn_...",
+  "reason": null
+}
+```
+
+- `status` is `"ok"` or `"unavailable"`.
+- `output` is raw text, or an object when `--output-schema` is set and Codex returned parseable JSON.
+- `model` is the actual start/resume model when Codex reports it; a requested `gpt-*` model that cannot be confirmed fails closed as `"unavailable"`.
+- Exit code `0` means ok, `3` means unavailable, and `2` means usage error.
+- If `status` is `"unavailable"`, degrade explicitly: drop, retry elsewhere, or report unavailable. Never treat it as a valid GPT answer.
+
+Fan-out pattern:
+```text
+Run N independent `codex:codex-consult` workers for read-only breadth.
+For each JSON response:
+  if status === "ok": use output
+  if status === "unavailable": degrade or retry; do not fabricate
+```
+
+Session helper:
+- `codex:codex-session` is the steerable collaborator relay.
+- It uses `task --background --write`, never `consult`, and never `--isolated`.
+- Start command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --background --write [--effort <effort>] [--model <model>] -- "<task text>"`.
+- Steering command after interrupt acknowledgement: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --background --write --resume-last [--effort <effort>] [--model <model>] -- "<steer text>"`.
+- Interrupt command while a job is active: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" cancel <job-id> --json`.
+- One session owns one persistent Codex thread and keeps one active turn at a time.
+- Before a steering resume, cancel any active job and wait for the `cancel --json` acknowledgement.
+- Resume continues the same Codex thread with prior context. Interrupted write-capable turns have no transactional rollback, so partial file changes may remain.
+- Surface companion stdout/status as the source of truth. Do not fabricate Codex output.

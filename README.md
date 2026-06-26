@@ -12,6 +12,7 @@ they already have.
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
 - `/codex:rescue`, `/codex:transfer`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work, hand off sessions, and manage background jobs
+- `codex:codex-consult` and `codex:codex-session` agents for workflow authors who need read-only GPT fan-out or a steerable GPT collaborator
 
 ## Requirements
 
@@ -161,6 +162,36 @@ Ask Codex to redesign the database connection to be more resilient.
 - if you do not pass `--model` or `--effort`, Codex chooses its own defaults.
 - if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
 - follow-up rescue requests can continue the latest Codex task in the repo
+
+### Workflow GPT Agents
+
+The plugin also exposes two agent relays for workflow authors:
+
+- `codex:codex-consult`: stateless, read-only fan-out. It calls `codex-companion.mjs consult --json --isolated` and returns the JSON stdout verbatim.
+- `codex:codex-session`: a long-lived steerable collaborator. It uses shared-broker `task --background --write`, keeps one Codex thread, and resumes with `--resume-last` after interrupting any active job.
+
+The lower-level `consult` command is intentionally structured:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" consult --json --isolated --model gpt-5.5 --effort high --output-schema schema.json -- "inspect this design"
+```
+
+It returns:
+
+```json
+{
+  "status": "ok",
+  "model": "gpt-5.5",
+  "output": "...",
+  "threadId": "thr_...",
+  "turnId": "turn_...",
+  "reason": null
+}
+```
+
+`status` is `ok` or `unavailable`. Exit codes are `0` for ok, `3` for unavailable, and `2` for usage errors. `--isolated` is the default for consult fan-out, `--model` accepts GPT ids and `spark`, `--effort` accepts Codex reasoning efforts, and `--output-schema` asks Codex to return JSON that the companion parses into `output`.
+
+For fan-out, run multiple `codex:codex-consult` calls and only consume entries with `status === "ok"`. Treat `status === "unavailable"` as a degraded call to drop, retry, or route elsewhere; never treat it as a GPT answer.
 
 ### `/codex:transfer`
 
