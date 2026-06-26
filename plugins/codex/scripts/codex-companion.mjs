@@ -728,6 +728,40 @@ function consultUnavailable(model, reason, result = {}) {
   };
 }
 
+function parseJsonObjectFromText(text) {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function formatCodexJsonErrorReason(detail) {
+  const parsed = parseJsonObjectFromText(detail);
+  if (parsed?.type !== "error") {
+    return null;
+  }
+
+  const message = parsed?.error?.message ?? parsed?.message;
+  if (typeof message !== "string" || !message.trim()) {
+    return null;
+  }
+
+  const status = parsed.status ?? parsed.error?.status ?? null;
+  const statusValue = status == null ? "" : String(status).trim();
+  const statusText = statusValue ? ` ${statusValue}` : "";
+  return `codex error${statusText}: ${message.trim().replace(/\s+/g, " ")}`;
+}
+
 function isGptModel(model) {
   return typeof model === "string" && /^gpt-/i.test(model);
 }
@@ -770,7 +804,8 @@ async function executeConsultRun(request) {
   }
 
   if (result.status !== 0) {
-    const reason = result.error?.message ?? result.stderr ?? "codex unavailable: turn failed";
+    const rawReason = result.error?.message ?? result.stderr ?? "codex unavailable: turn failed";
+    const reason = formatCodexJsonErrorReason(rawReason) ?? rawReason;
     return consultUnavailable(model, reason, result);
   }
 
@@ -1015,9 +1050,10 @@ async function handleConsult(argv) {
   try {
     execution = await executeConsultRun(request);
   } catch (error) {
-    const reason = error?.message?.startsWith("timeout:")
-      ? error.message
-      : `codex unavailable: ${error instanceof Error ? error.message : String(error)}`;
+    const message = error instanceof Error ? error.message : String(error);
+    const reason = message.startsWith("timeout:")
+      ? message
+      : formatCodexJsonErrorReason(message) ?? `codex unavailable: ${message}`;
     execution = consultUnavailable(model, reason);
   }
 

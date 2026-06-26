@@ -808,6 +808,43 @@ test("consult fails loud when Codex is unavailable", () => {
   assert.doesNotMatch(payload.output, /Handled the requested task/);
 });
 
+test("consult formats raw Codex JSON errors as a readable reason", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "codex-json-error");
+  initGitRepo(repo);
+
+  const result = run(process.execPath, [SCRIPT, "consult", "--json", "--model", "gpt-x", "--", "answer from gpt"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 3);
+  const payload = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(payload), ["status", "model", "output", "threadId", "turnId", "reason"]);
+  assert.equal(payload.status, "unavailable");
+  assert.equal(payload.reason, "codex error 400: The 'gpt-x' model is not supported for this request.");
+  assert.doesNotMatch(payload.reason, /invalid_request_error/);
+  assert.doesNotMatch(payload.reason, /^\{/);
+});
+
+test("consult preserves mixed stderr with embedded JSON", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "codex-mixed-stderr-error");
+  initGitRepo(repo);
+
+  const result = run(process.execPath, [SCRIPT, "consult", "--json", "--", "answer from gpt"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 3);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.status, "unavailable");
+  assert.equal(payload.reason, 'warning: network unstable\n{"message":"rate limited"}\nretry hint: try again later');
+});
+
 test("consult requires prompt via passthrough, prompt file, or stdin", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

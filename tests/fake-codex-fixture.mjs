@@ -462,6 +462,30 @@ rl.on("line", (line) => {
 	        saveState(state);
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
+        if (BEHAVIOR === "codex-json-error") {
+          const errorMessage = JSON.stringify({
+            type: "error",
+            status: 400,
+            error: {
+              type: "invalid_request_error",
+              message: "The 'gpt-x' model is not supported for this request."
+            }
+          });
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          send({ method: "error", params: { threadId: thread.id, turnId, error: { message: errorMessage } } });
+          send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "failed") } });
+          break;
+        }
+
+        if (BEHAVIOR === "codex-mixed-stderr-error") {
+          process.stderr.write('warning: network unstable\\n{"message":"rate limited"}\\nretry hint: try again later\\n');
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          setTimeout(() => {
+            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "failed") } });
+          }, 25);
+          break;
+        }
+
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
           ? structuredReviewPayload(prompt)
           : taskPayload(prompt, thread.name && thread.name.startsWith("Codex Companion Task") && prompt.includes("Continue from the current thread state"));
