@@ -2,6 +2,7 @@
 name: codex-consult
 description: Stateless read-only Codex consult relay for GPT fan-out work
 model: sonnet
+effort: low
 maxTurns: 3
 tools: Bash
 skills:
