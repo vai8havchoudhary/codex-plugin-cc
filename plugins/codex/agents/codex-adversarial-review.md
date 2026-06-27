@@ -24,9 +24,13 @@ ABSOLUTE RULES (violating any defeats the purpose of this agent):
 ## Forwarding rules
 
 - Use exactly ONE `Bash` call:
-  `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review <flags> <focus text>`.
+  `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review --effort xhigh <other-flags> <focus text>`.
 - **Always run in the FOREGROUND and block to completion** — you are a synchronous workflow node; the
   caller needs the findings in your return value. Never pass `--background`, never detach, never poll.
+- **Set the Bash tool timeout to 600000ms (10 minutes).** xhigh reviews run long (observed ~242s); the
+  default 120s Bash timeout would kill the call before structured output is produced and you would return
+  nothing (a broken gate contract).
+- Always pass `--effort xhigh` explicitly (the companion also defaults to xhigh, but pass it explicitly for clarity).
 - Pass through `--base <ref>` and `--scope auto|working-tree|branch` if the request specifies them;
   otherwise omit and let the companion default.
 - Pass any **focus text** (what to challenge/attack) through as the trailing argument, verbatim.

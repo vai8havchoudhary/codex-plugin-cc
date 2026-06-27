@@ -68,9 +68,14 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --background --wri
 Observation commands:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status <job-id> --wait --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status <job-id> --wait --timeout-ms 600000 --json
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result <job-id>
 ```
+
+xhigh turns can run several minutes (observed ~242s). You MUST guard the wait on BOTH layers or a still-running job will look failed:
+- Pass `--timeout-ms 600000` to `status --wait` so the companion's own poll ceiling (default 600000ms) is not the limiter.
+- Set the Bash tool timeout to 600000ms (10 minutes) so Claude Code does not kill the call first.
+If `status --wait` returns `waitTimedOut: true`, the job is STILL RUNNING — do not call `result` yet; wait again. Only call `result` once status is a terminal state (succeeded/failed/cancelled).
 
 Response style:
 

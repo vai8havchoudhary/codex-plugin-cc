@@ -66,7 +66,7 @@ import {
 
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
-const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
+const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 600000;   // 10min ceiling: xhigh turns observed ~242s; 240s default could prematurely time out a still-running job
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
@@ -78,7 +78,7 @@ function printUsage() {
       "Usage:",
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
-      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
+      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs consult [--json] [--isolated|--shared|--thread <id>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [--output-schema <file>] [--timeout <sec>] -- <prompt>",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
@@ -423,6 +423,7 @@ async function executeReviewRun(request) {
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
+    effort: request.effort ?? 'xhigh',   // default xhigh per project policy
     sandbox: "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
     onProgress: request.onProgress
@@ -499,7 +500,7 @@ async function executeTaskRun(request) {
     prompt: request.prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
-    effort: request.effort,
+    effort: request.effort ?? 'xhigh',   // default xhigh per project policy (GPT work always xhigh; explicit --effort overrides)
     sandbox: request.write ? "workspace-write" : "read-only",
     onProgress: request.onProgress,
     persistThread: true,
@@ -898,7 +899,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd"],
+    valueOptions: ["base", "scope", "model", "effort", "cwd"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
@@ -908,6 +909,7 @@ async function handleReviewCommand(argv, config) {
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const focusText = positionals.join(" ").trim();
+  const effort = normalizeReasoningEffort(options.effort);
   const target = resolveReviewTarget(cwd, {
     base: options.base,
     scope: options.scope
@@ -931,6 +933,7 @@ async function handleReviewCommand(argv, config) {
         base: options.base,
         scope: options.scope,
         model: options.model,
+        effort,
         focusText,
         reviewName: config.reviewName,
         onProgress: progress
