@@ -1,13 +1,48 @@
 # HANDOFF — maintained fork of `openai/codex-plugin-cc`
 
 For a fresh agent picking up this work. The native-GPT-engine effort is **implemented, verified, and
-live**. This file reflects state as of **2026-06-27** (supersedes the original pre-implementation handoff).
+live**. This file reflects state as of **2026-06-28** (supersedes the original pre-implementation handoff).
 
 ## What this fork delivers (done)
 
 GPT (the whole GPT model family) is a **first-class, fan-outable Workflow engine, peer to sonnet/opus**
 — reached through native plugin agents, no homegrown shims. Plugin is at **v1.0.12**, installed as the
 active `codex@openai-codex` (local marketplace → `~/scratch/cc_codex_plugin`).
+
+### Fanout orchestration (NEW — v1.0.13)
+
+A full two-level fanout-and-merge pipeline, Workflow-tracked, with dual-judge convergence loops.
+
+**Files:**
+- `plugins/codex/agents/fanout-worker.md` — Sonnet captain per worktree. GPT (karpathy) writes all
+  code. Each round: karpathy → scoped tests → `git diff` + commit → adversarial-review → `advisor()`
+  unconditional → DONE or next round. Cap: **5 rounds**. Terminal states: `DONE` / `FAILED_AFTER_5_ROUNDS`.
+- `plugins/codex/agents/fanout-merge.md` — Opus captain. Same loop: karpathy merges/glues →
+  full test suite → adversarial-review → `advisor()` → DONE or next round. Cap: **5 rounds**.
+- `plugins/codex/skills/fanout/SKILL.md` — orchestration skill. Phase 0 (contract + confirm gate)
+  runs in the main session; after human confirms, launches `fanout-workflow.js` as a Workflow. Contract
+  specifies shared interfaces + `dependsOn` per chunk; **no file ownership** (worktree isolation handles it).
+  Dependency-aware quorum: 0 FAILED → proceed; 1 FAILED → check dependents, warn, proceed; >1 FAILED → abort.
+  Confirm gate shows expected (~40–60 min) vs worst-case (~100 min, +66% cost if all workers hit round 5).
+- `plugins/codex/scripts/fanout-workflow.js` — Workflow script (phases: Fanout / Quorum / Merge).
+  Progress visible in `/workflows`. Spawns workers via `agentType: 'codex:fanout-worker'` + `isolation: 'worktree'`.
+
+**Key gotcha — Workflow `args` injection:** The `args` global is `undefined` when invoking via `scriptPath`
+without a prior inline run. Workaround: embed contract data as a hardcoded `const RUN = {...}` in the
+script body. The skill instructs Claude to construct a tailored inline script for each run.
+
+**Key finding — cross-worktree deps:** Workers with `dependsOn` cannot run scoped tests against the
+dependency (it lives in another worktree). The worker correctly handles this: `advisor()` pre-work call
+flags it, GPT creates a throwaway conformant stub to verify test logic, deletes it, commits only the
+test file. Both judges accept the expected `ERR_MODULE_NOT_FOUND` as non-blocking.
+
+**Verified (end-to-end test runs, 2026-06-28):**
+- Smoke test (greet.ts): 2 parallel workers, round 1 each, 3/3 tests PASS post-merge.
+  `advisor()` pre-work call (chunk-1) flagged scope-creep risk; shaped karpathy prompt to prevent it.
+  `advisor()` pre-work call (chunk-2) flagged cross-worktree isolation problem before it occurred.
+- Multi-round test (retry.ts): 1 worker, **3 rounds**. Round 1 had a real HIGH finding (async `onError`
+  rejection escaping guard); fixed in round 2; advisor confirmed PASS in round 3. Merge: 2 rounds,
+  108/108 tests pass with isolated state. HIGH finding caught and fixed before DONE reported.
 
 ### Native plugin agents (in `plugins/codex/agents/`)
 - **`codex:codex-consult`** — stateless, read-only, **isolated-by-default** parallel fan-out worker.
